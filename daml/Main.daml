@@ -1,0 +1,170 @@
+module Main where
+
+import DA.Optional
+import DA.Date
+import DA.Record
+
+type LeaseAgreementProposalId = ContractId LeaseAgreementProposal
+type LeaseAgreementId = ContractId LeaseAgreement
+
+data PropertyInfo = PropertyInfo with
+  address: Text
+  capacity: Int
+  minimumRent: Optional (Decimal) -- either amount in USD or None
+  seperateKitchen: Bool
+  seperateToilet: Bool
+  owner: Party
+    deriving(Show, Eq, Ord)
+
+data LeaseInfo = LeaseInfo with
+  rent: Decimal
+  startDate: Date
+  endDate: Date
+  resident: Either Party [Party] -- either 1 person or a group of people
+  propertyInfo: PropertyInfo
+    deriving(Show, Eq, Ord)
+
+
+template LeaseAgreementProposal
+  with
+    leaseInfo: LeaseInfo
+    tenant: Party
+    owner: Party
+    note: Optional(Text)
+  where
+    signatory tenant
+    observer owner
+
+    key (tenant, leaseInfo) : (Party, LeaseInfo)
+    maintainer key._1
+
+    ensure (leaseInfo.startDate < leaseInfo.endDate) -- endDate must be later than startDate
+      && (owner == leaseInfo.propertyInfo.owner) -- owner of the proposal who can perform acccept must be the owner of property 
+      && (isNone leaseInfo.propertyInfo.minimumRent -- if minimum rent exists, proposal's rent must greater than the minimum rent
+        || isSome leaseInfo.propertyInfo.minimumRent && leaseInfo.rent > fromSome leaseInfo.propertyInfo.minimumRent)
+  
+    -- simply returns the ContractId of the current contract without archiving anything; can be used as a reminder if the proposal doesn't get either Accpeted or Rejected for a while
+    nonconsuming choice Propose: LeaseAgreementProposalId
+     with
+     controller tenant
+        do
+          return self
+
+    -- tenant can revise their proposal if getting rejected by the owner
+    nonconsuming choice Revise: LeaseAgreementProposalId
+      with
+        newLeaseInfo: LeaseInfo
+        newNote: Optional(Text)
+      controller tenant
+        do
+          assertMsg ("Lease Info needs to be revised")(newLeaseInfo /= this.leaseInfo)
+          create this with
+            leaseInfo = newLeaseInfo
+            note = newNote
+          
+    -- owner can accept the proposal and create a LeaseAgreement contract if the offer is satisfying
+    choice Accept: LeaseAgreementId
+      with 
+      controller owner
+        do
+          signTime <- getTime
+          let signDate = toDateUTC signTime
+          assertMsg "LeaseAgreement should be signed before the start date" (signDate < leaseInfo.startDate)
+          create LeaseAgreement with
+            leaseInfo
+            tenant
+            owner
+            signDate
+
+    -- tenant can cancel their proposal
+    choice Cancel: ()
+     with
+     controller tenant
+        do
+          return ()
+    
+    -- owner can reject the proposal
+    choice Reject: LeaseAgreementProposalId
+      with
+        reason: Optional(Text)
+      controller owner
+      do
+        create this with
+          note = reason
+
+
+template LeaseAgreement
+  with
+    leaseInfo: LeaseInfo
+    tenant: Party
+    owner: Party
+    signDate: Date
+  where
+    signatory tenant, owner
+
+    key (owner, leaseInfo) : (Party, LeaseInfo)
+    maintainer key._1
+
+    -- tenant can check endDate of their LeaseAgreement contract
+    nonconsuming choice CheckEndDate: Either (Text) (Date)
+      with
+      controller tenant
+        do
+          currentTime <- getTime
+          let today = toDateUTC currentTime
+          if(today > leaseInfo.endDate) then
+            return (Left "Already End")
+          else
+            return (Right leaseInfo.endDate)
+
+    -- both tenant or owner can check whether the LeaseAgreement contract is still active on the date of checking
+    nonconsuming choice CheckActive: Bool
+      with
+        checker: Party
+      controller checker
+        do
+          assertMsg ("Must be the tenant or owner to check if the Lease Agreement is Active") (checker == tenant || checker == owner)
+          currentTime <- getTime
+          let today = toDateUTC currentTime
+          if (today >= leaseInfo.startDate && today <= leaseInfo.endDate) then
+            return (True)
+          else
+            return (False)
+
+    -- tenant can check a list of leaseAgreements' address and rent
+    nonconsuming choice CheckLeaseAgreementRent: [Text]
+      with
+        leaseAgreements: [(ContractId LeaseAgreement, LeaseAgreement)]
+      controller tenant
+        do
+          if null leaseAgreements then return ["N/A"]
+          else do
+            return $ map (\info -> info._2.leaseInfo.propertyInfo.address <> ", rent: " <> show info._2.leaseInfo.rent <> ", date:" <> show info._2.leaseInfo.startDate <> " - " <> show info._2.leaseInfo.endDate) leaseAgreements
+          
+    -- tenant and owner can cancel the agreement
+    choice CancelAgreement: ()
+      with
+      controller tenant, owner
+        do
+          return ()
+
+    -- tenant and owner can renew their agreement with new rent and date
+    choice Renewal: LeaseAgreementId
+      with
+        newRent: Decimal
+        newStartDate: Date
+        newEndDate: Date
+        newResident: Either Party [Party]
+      controller tenant, owner
+        do
+          signTime <- getTime
+          let signDate = toDateUTC signTime
+          let oldLeaseInfo = this.leaseInfo
+          let newRenewalLeaseInfo = oldLeaseInfo with 
+              rent = newRent
+              startDate = newStartDate
+              endDate = newEndDate
+              resident = newResident
+          
+          create this with
+            leaseInfo = newRenewalLeaseInfo

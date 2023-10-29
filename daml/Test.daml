@@ -1,0 +1,97 @@
+module Test where
+
+import Main
+import Setup
+import DA.Date
+import Daml.Script
+import DA.Record
+
+{-
+    Min 1 Full Scenario & Min 3 Happy Paths
+        + testCreateLeaseAgreementProposal: tenant can crate a LeaseAgreementProposal contracts if conditions are satisfied
+            1. tenant creates a LeaseAgreement contract     
+        + testLeaseAgreementProposal: tenant and owner exercise Reject, Revise
+            2. owner exercises Reject with reason: "Want a higher rent, 22,000 maybe"
+            3. tenant exercises Revise with an updated rent
+        + test CreateLeaseAgreement: owner can "Accept" to create a Lease Agreement
+            4. owner exercises Accept - Lease Agreement contract is created 
+
+    Min 3 Unhappy Paths
+        - cantCreateWrongDates: tenant cannot create a LeaseAgreementProposal contract if startDate > endDate
+        - cantCreateLowerThanMinimumRent: tenant cannot create a LeaseAgreementProposal contract if minimum rent exists and minimum rent > proposal rent 
+        - cantCreateLeaseAgreement: tenant cannot create an LeaseAgreement contract without owner's authority
+-}
+
+
+-- + testCreateLeaseAgreementProposal: tenant can crate a LeaseAgreementProposal contracts if conditions are satisfied
+testCreateLeaseAgreementProposal = script do
+    (testParties@TestParties{..}, testLeaseInfos@TestLeaseInfos{..}) <- setupTestLeaseInfos
+
+    -- 1. tenant create a LeaseAgreementProposal contract
+    proposal1 <- submit tenant do
+        createCmd LeaseAgreementProposal with
+            tenant
+            owner
+            leaseInfo = leaseInfo1
+            note = Some "First Proposal"
+
+    return  (testParties, testLeaseInfos, proposal1)
+
+-- + testLeaseAgreementProposal: tenant and owner exercise Reject, Revise
+testLeaseAgreementProposal = script do
+    (testParties@TestParties{..}, testLeaseInfos@TestLeaseInfos{..}, proposal1) <- testCreateLeaseAgreementProposal
+
+    -- 2. owner exercises Reject with reason: "Want a higher rent, 22,000 maybe"
+    rejectedProposal <- submit owner do
+        exerciseCmd proposal1 Reject with
+            reason = Some "Want a higher rent, $22,000 maybe"
+
+    --  3. tenant exercises Revise with an updated rent
+    let
+        revisedLeaseInfo = leaseInfo1 with
+            rent = 22000.0
+
+    revisedProposal <- submit tenant do 
+        exerciseCmd rejectedProposal Revise with
+            newLeaseInfo = revisedLeaseInfo
+            newNote = Some "Update rent to $22,000"
+
+    return (testParties, testLeaseInfos, revisedProposal)
+
+--  + test CreateLeaseAgreement: owner can "Accept" to create a Lease Agreement
+testCreateLeaesAgreement = script do
+    (testParties@TestParties{..}, testLeaseInfos@TestLeaseInfos{..}, revisedProposal) <- testLeaseAgreementProposal
+    setTime (datetime 2023 Jan 20 0  0 0)
+    -- 4. owner exercises Accept - Lease Agreement contract is created
+    submit owner do
+        exerciseCmd revisedProposal Accept
+
+-- - cantCreateWrongDates: tenant cannot create a LeaseAgreementProposal contract if startDate > endDate
+cantCreateWrontDates = script do
+    (testParties@TestParties{..}, testLeaseInfos@TestLeaseInfos{..}) <- setupTestLeaseInfos
+    submitMustFail owner do
+        createCmd LeaseAgreementProposal with
+            owner
+            tenant
+            leaseInfo = leaseInfo3
+            note = None
+-- - cantCreateLowerThanMinimumRent: tenant cannot create a LeaseAgreementProposal contract if minimum rent exists and minimum rent > proposal rent
+cantCreateLowerThanMininumrent = script do
+    (testParties@TestParties{..}, testLeaseInfos@TestLeaseInfos{..}) <- setupTestLeaseInfos
+    submitMustFail owner do
+        createCmd LeaseAgreementProposal with
+            owner
+            tenant
+            leaseInfo = leaseInfo2
+            note = None
+
+-- - cantCreateLeaseAgreement: tenant cannot create an LeaseAgreement contract without owner's authority
+cantCreatLeaseAgreement = script do
+    (testParties@TestParties{..}, testLeaseInfos@TestLeaseInfos{..}) <- setupTestLeaseInfos
+
+    submitMustFail tenant do
+        createCmd LeaseAgreement with
+            owner
+            tenant
+            leaseInfo = leaseInfo1
+            signDate = toDateUTC (datetime 2022 Jan 20 0  0 0)

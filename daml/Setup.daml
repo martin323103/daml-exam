@@ -1,0 +1,98 @@
+module Setup where
+
+import Main
+import DA.Date
+import Daml.Script
+
+data TestParties = TestParties with
+    owner: Party
+    tenant: Party
+    resident: Party
+
+setupTestParties = script do 
+    -- 1. allocate Party with the given display name
+    owner <- allocatePartyWithHint "Owner" (PartyIdHint "OWN")
+    tenant <- allocatePartyWithHint "Tenant" (PartyIdHint "TEN")
+    resident <- allocatePartyWithHint "Resident" (PartyIdHint "RES")
+
+    return TestParties with
+        owner
+        tenant
+        resident
+
+setupUsers = script do 
+    (testParties@TestParties{..}, testLeaseInfos@TestLeaseInfos{..}) <- setupTestLeaseInfos
+
+    -- 2. Construct user-ids from text
+    ownerId <- validateUserId "owner"  
+    aliceId <- validateUserId "alice"
+    bobId <- validateUserId "bob"
+
+    -- 3. Create users with the given rights 
+    createUser (User ownerId (Some owner)) [CanActAs owner]  
+    createUser (User aliceId (Some tenant)) [CanActAs tenant]
+    createUser (User bobId (Some tenant)) [CanActAs tenant]
+
+    submit tenant do
+        createCmd LeaseAgreementProposal with
+            leaseInfo = leaseInfo1
+            tenant
+            owner
+            note = None
+
+data TestLeaseInfos = TestLeaseInfos with
+    leaseInfo1: LeaseInfo
+    leaseInfo2: LeaseInfo
+    leaseInfo3: LeaseInfo
+
+setupTestLeaseInfos = script do
+    testParties@TestParties{..} <- setupTestParties
+    
+    let
+        propertyInfo1 = PropertyInfo with
+            owner = owner
+            address = "address1"
+            capacity = 5
+            minimumRent = None
+            seperateKitchen = True
+            seperateToilet = True
+
+        leaseInfo1 = LeaseInfo with
+            propertyInfo = propertyInfo1
+            rent = 20000.0
+            startDate = date 2024 Jan 10
+            endDate = date 2025 Jan 10
+            resident = Right [tenant, resident]
+        
+        propertyInfo2 = PropertyInfo with
+            owner = owner
+            address = "address2"
+            capacity = 3
+            minimumRent = Some 10000.0
+            seperateKitchen = False
+            seperateToilet = False
+
+        leaseInfo2 = LeaseInfo with
+            propertyInfo = propertyInfo2
+            rent = 9000.0
+            startDate = date 2023 Jan 10
+            endDate = date 2024 Jan 10
+            resident = Right [tenant, resident]
+
+        propertyInfo3 = PropertyInfo with
+            owner = owner
+            address = "address3"
+            capacity = 2
+            minimumRent = None
+            seperateKitchen = True
+            seperateToilet = False
+
+        leaseInfo3 = LeaseInfo with
+            propertyInfo = propertyInfo3
+            rent = 10000.0
+            startDate = date 2023 Feb 10
+            endDate = date 2023 Jan 10
+            resident = Left tenant
+
+    return (testParties, TestLeaseInfos with {leaseInfo1, leaseInfo2, leaseInfo3})
+
